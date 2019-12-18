@@ -2,6 +2,8 @@ package library.autodispose.android
 
 import androidx.lifecycle.*
 import io.reactivex.Observable
+import io.reactivex.disposables.Disposable
+import io.reactivex.functions.Consumer
 import io.reactivex.subjects.BehaviorSubject
 import library.autodispose.State
 import library.autodispose.autoDispose
@@ -15,6 +17,9 @@ private class AutodisposeVM : ViewModel(), LifecycleObserver {
 
     val subject by lazy {
         BehaviorSubject.create<State>()
+    }
+    val map by lazy {
+        HashMap<String, Disposable>()
     }
 
     private var isCreated = false
@@ -77,16 +82,45 @@ private class AutodisposeVM : ViewModel(), LifecycleObserver {
     }
 }
 
-fun <T> T.scope(): Observable<State> where T: ViewModelStoreOwner, T: LifecycleOwner {
+private fun <T> T.getViewModel(): AutodisposeVM where T: ViewModelStoreOwner, T: LifecycleOwner {
     val owner = this
     val vmProvider = ViewModelProvider(owner, factory)
     val viewModel = vmProvider.get(AutodisposeVM::class.java)
 
     viewModel.setupLifecycle(lifecycle)
 
-    return viewModel.subject
+    return viewModel
 }
 
-fun <G, T> Observable<G>.autoDispose(owner: T): ObservableProxy<G> where T: ViewModelStoreOwner, T: LifecycleOwner {
-    return autoDispose(owner.scope())
+fun <G, T> Observable<G>.autoDispose(owner: T)
+        : ObservableProxy<G> where T: ViewModelStoreOwner, T: LifecycleOwner {
+    return autoDispose(owner.getViewModel().subject)
+}
+
+fun <G, T> Observable<G>.autoDispose(owner: T, name: String, strategy: ConflictStrategy)
+        : ObservableProxy<G> where T: ViewModelStoreOwner, T: LifecycleOwner {
+    val viewModel = owner.getViewModel()
+
+    viewModel.map[name]?.apply {
+        if (!isDisposed) {
+            when (strategy) {
+                ConflictStrategy.Replace -> {
+                    dispose()
+                }
+                ConflictStrategy.Ignore -> {
+                    return EmptyObservableProxy()
+                }
+            }
+        }
+    }
+
+    return autoDispose(viewModel.subject)
+        .doOnSubscribe(Consumer {
+            val current = viewModel.map[name]
+            if (current?.isDisposed == false && current !== it) {
+                current.dispose()
+            }
+
+            viewModel.map[name] = it
+        })
 }
